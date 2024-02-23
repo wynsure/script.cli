@@ -72,8 +72,8 @@ class ODBCManager {
   constructor(public readonly options: ODBCParams) { }
 
   static callPowershell(scriptCommand: string): number {
-    // We don't want to display anything from the command
-    return command.exec(`powershell.exe -NoProfile -ExecutionPolicy Unrestricted -NonInteractive -WindowStyle Hidden -Command "${scriptCommand}" 2>nul`)
+    // Messages are printed to standard output
+    return command.exec(`powershell.exe -NoProfile -ExecutionPolicy Unrestricted -NonInteractive -WindowStyle Hidden -Command "${scriptCommand}"`)
   }
 
   removeConnectionIfNeeded() {
