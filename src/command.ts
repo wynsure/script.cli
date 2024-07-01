@@ -11,6 +11,12 @@ export type CommandOptionsType = {
   ignoreStatus?: boolean
 }
 
+export type ReadCommandOptionsType = CommandOptionsType & {
+  maxBuffer?: number // limit the output buffer to 128Mi by default
+}
+
+const stdout_size_max = 128 * 1024 * 1024 // 128Mi
+
 function execSync(command, options) {
   try {
     const stdout = ChildProcess.execSync(command, {
@@ -49,8 +55,8 @@ function indentMessage(message) {
 }
 
 type ReadCommand = {
-  exec(command: string, options?: CommandOptionsType): number
-  call(program: string, args?: (string | stringMap | stringArray)[], options?: CommandOptionsType): number
+  exec(command: string, options: ReadCommandOptionsType): string | Error,
+  call(program: string, args: string[], options: ReadCommandOptionsType): string | Error
 }
 
 export const command: {
@@ -64,12 +70,14 @@ export const command: {
       return execSync(command, {
         ...options,
         stdio: 'pipe',
+        maxBuffer: options?.maxBuffer || stdout_size_max,
       })
     },
     call(program, args, options) {
-      return spawnSync(program, args, {
+      return spawnSync(program, normalizeArgs(args), {
         ...options,
         stdio: 'pipe',
+        maxBuffer: options?.maxBuffer || stdout_size_max,
       })
     },
   },
@@ -120,7 +128,7 @@ function normalizeArgs(argv): string[] {
         process(arg[key])
       }
     }
-    else {
+    else if (arg != undefined) {
       result.push(arg.toString())
     }
   }
