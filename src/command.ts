@@ -2,8 +2,8 @@ import Path from "path"
 import Process from "process"
 import ChildProcess from "child_process"
 
-export type stringMap = { [name: string]: string }
-export type stringArray = string[]
+export type StringMap = { [name: string]: string }
+export type StringArray = string[]
 
 export type CommandOptionsType = {
   cwd?: string
@@ -12,126 +12,245 @@ export type CommandOptionsType = {
 }
 
 export type ReadCommandOptionsType = CommandOptionsType & {
-  maxBuffer?: number // limit the output buffer to 128Mi by default
+  maxBuffer?: number
 }
 
-const stdout_size_max = 128 * 1024 * 1024 // 128Mi
+const stdout_size_max = 128 * 1024 * 1024 // 128 MiB
 
-function execSync(command, options) {
+type RunResult = {
+  status: number
+  stdout: string
+  stderr: string
+  error?: Error
+}
+
+function resolveOptions(options?: CommandOptionsType | ReadCommandOptionsType) {
+  return {
+    ...options,
+    cwd: options?.cwd ? Path.resolve(options.cwd) : undefined,
+  }
+}
+
+function runExec(
+  command: string,
+  options: CommandOptionsType | ReadCommandOptionsType | undefined,
+  captureOutput: boolean,
+): RunResult {
   try {
     const stdout = ChildProcess.execSync(command, {
-      ...options,
-      cwd: options && options.cwd && Path.resolve(options.cwd),
+      ...resolveOptions(options),
+      stdio: captureOutput
+        ? "pipe"
+        : ["inherit", "inherit", "inherit"],
+      maxBuffer: captureOutput
+        ? (options as ReadCommandOptionsType)?.maxBuffer ?? stdout_size_max
+        : undefined,
     })
-    return stdout && stdout.toString()
+
+    return {
+      status: 0,
+      stdout: stdout?.toString() ?? "",
+      stderr: "",
+    }
   }
-  catch (error) {
-    return handleError(command, error, options)
+  catch (error: any) {
+    return {
+      status:
+        typeof error?.status === "number"
+          ? error.status
+          : 1,
+      stdout: error?.stdout?.toString?.() ?? "",
+      stderr: error?.stderr?.toString?.() ?? "",
+      error,
+    }
   }
 }
 
-function spawnSync(program, args, options) {
+function runSpawn(
+  program: string,
+  args: string[],
+  options: CommandOptionsType | ReadCommandOptionsType | undefined,
+  captureOutput: boolean,
+): RunResult {
   const result = ChildProcess.spawnSync(program, args, {
-    ...options,
-    cwd: options && options.cwd && Path.resolve(options.cwd),
+    ...resolveOptions(options),
+    stdio: captureOutput
+      ? "pipe"
+      : ["inherit", "inherit", "inherit"],
+    maxBuffer: captureOutput
+      ? (options as ReadCommandOptionsType)?.maxBuffer ?? stdout_size_max
+      : undefined,
   })
-  if (result.error || result.status) {
-    const command = `${program} ${args ? args.join(" ") : ""}`
-    return handleError(command, result.error || new Error(`Status ${result.status}`), options)
+
+  return {
+    status:
+      result.status ??
+      (result.error ? 1 : 0),
+
+    stdout: result.stdout?.toString() ?? "",
+    stderr: result.stderr?.toString() ?? "",
+    error: result.error ?? undefined,
   }
-  return result.stdout && result.stdout.toString()
 }
 
-function handleError(command, error, options) {
-  error.message = `Command '${command}' has failed:\n${indentMessage(error)}`
-  if (options && options.ignoreError) console.log("[ignored]", error.message)
-  else throw error
-  return error
+function handleFailure(
+  command: string,
+  result: RunResult,
+  options?: CommandOptionsType,
+): void {
+  let message: string
+
+  if (result.error) {
+    message =
+      `Command '${command}' has crashed:\n` +
+      indentMessage(result.error)
+  }
+  else {
+    message =
+      `Command '${command}' has failed with status code ${result.status}.`
+  }
+
+  if (options?.ignoreStatus) {
+    console.log("[ignored]", message)
+    return
+  }
+
+  throw new Error(message)
 }
 
-function indentMessage(message) {
+function indentMessage(message: any): string {
   const padding = "    | "
-  return padding + message.toString().split("\n").join("\n" + padding)
+  return (
+    padding +
+    message.toString().split("\n").join("\n" + padding)
+  )
 }
 
 type ReadCommand = {
-  exec(command: string, options: ReadCommandOptionsType): string | Error,
-  call(program: string, args: string[], options: ReadCommandOptionsType): string | Error
+  exec(
+    command: string,
+    options?: ReadCommandOptionsType
+  ): string
+
+  call(
+    program: string,
+    args?: string[],
+    options?: ReadCommandOptionsType
+  ): string
 }
 
 export const command: {
-  exec(command: string, options?: CommandOptionsType): number
-  call(program: string, args?: (string | stringMap | stringArray)[], options?: CommandOptionsType): number
-  exit(status: number)
+  exec(
+    command: string,
+    options?: CommandOptionsType
+  ): number
+
+  call(
+    program: string,
+    args?: (string | StringMap | StringArray)[],
+    options?: CommandOptionsType
+  ): number
+
+  exit(status: number): void
+
   read: ReadCommand
 } = {
   read: {
     exec(command, options) {
-      return execSync(command, {
-        ...options,
-        stdio: 'pipe',
-        maxBuffer: options?.maxBuffer || stdout_size_max,
-      })
+      const result = runExec(
+        command,
+        options,
+        true,
+      )
+
+      if (result.status !== 0 || result.error) {
+        handleFailure(command, result, options)
+      }
+
+      return result.stdout
     },
+
     call(program, args, options) {
-      return spawnSync(program, normalizeArgs(args), {
-        ...options,
-        stdio: 'pipe',
-        maxBuffer: options?.maxBuffer || stdout_size_max,
-      })
+      const argv = normalizeArgs(args)
+
+      const result = runSpawn(
+        program,
+        argv,
+        options,
+        true,
+      )
+
+      if (result.status !== 0 || result.error) {
+        handleFailure(
+          `${program} ${argv.join(" ")}`,
+          result,
+          options,
+        )
+      }
+
+      return result.stdout
     },
   },
+
   exec(command, options) {
-    const status = ChildProcess.execSync(command, {
-      ...options,
-      cwd: options && options.cwd && Path.resolve(options.cwd),
-      stdio: ['inherit', 'inherit', 'inherit']
-    })
-    if (status) {
-      const message = `Command '${command}' has failed with status code ${status}.`
-      if (options && options.ignoreStatus) console.log("[ignored]", message)
-      else throw new Error(message)
+    const result = runExec(
+      command,
+      options,
+      false,
+    )
+
+    if (result.status !== 0 || result.error) {
+      handleFailure(command, result, options)
     }
+
     return 0
   },
+
   call(program, args, options) {
     const argv = normalizeArgs(args)
-    const result = ChildProcess.spawnSync(program, argv, {
-      ...options,
-      cwd: options && options.cwd && Path.resolve(options.cwd),
-      stdio: ['inherit', 'inherit', 'inherit']
-    })
-    if (result.error) {
-      throw new Error(`Command '${program} ${argv.join(" ")}' has crashed: ${result.error}.`)
+
+    const result = runSpawn(
+      program,
+      argv,
+      options,
+      false,
+    )
+
+    if (result.status !== 0 || result.error) {
+      handleFailure(
+        `${program} ${argv.join(" ")}`,
+        result,
+        options,
+      )
     }
-    else if (result.status) {
-      const message = `Command '${program} ${argv.join(" ")}' has failed with status code ${result.status}.`
-      if (options && options.ignoreStatus) console.log("[ignored]", message)
-      else throw new Error(message)
-    }
-    return result.status
+
+    return result.status  // Non-zero statuses are either thrown or ignored.
   },
+
   exit(status) {
     Process.exit(status)
   },
 }
 
 function normalizeArgs(argv): string[] {
-  const result = []
-  function process(arg) {
+  const result: string[] = []
+
+  function process(arg: any): void {
     if (Array.isArray(arg)) {
       arg.forEach(process)
     }
-    else if (typeof arg === "object") {
+    else if (typeof arg === "object" && arg !== null) {
       for (const key in arg) {
         result.push(key)
         process(arg[key])
       }
     }
-    else if (arg != undefined) {
+    else if (arg !== undefined) {
       result.push(arg.toString())
     }
   }
+
   process(argv)
+
   return result
 }
